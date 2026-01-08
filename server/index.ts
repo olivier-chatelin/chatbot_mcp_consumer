@@ -1,10 +1,12 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
 import { CODE_ASSISTANT_SYSTEM_PROMPT } from './system-prompts.js';
 import { mcpClient } from './mcp-client.js';
 import { mcpToolsToOpenAIFunctions, formatMCPToolResult } from './openai-tools.js';
+import { LLMProvider, ChatMessage, MCPTool } from './providers/types.js';
+import { OpenAIProvider } from './providers/openai-provider.js';
+import { AnthropicProvider } from './providers/anthropic-provider.js';
 
 // Load environment variables
 dotenv.config();
@@ -16,27 +18,39 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Initialize OpenAI client
-if (!process.env.OPENAI_API_KEY) {
-  console.error('❌ OPENAI_API_KEY is not set in environment variables');
-  process.exit(1);
-}
+// LLM Provider configuration
+const LLM_PROVIDER = (process.env.LLM_PROVIDER || 'openai').toLowerCase();
+let llmProvider: LLMProvider;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Initialize the selected provider
+if (LLM_PROVIDER === 'anthropic' || LLM_PROVIDER === 'claude') {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error('❌ ANTHROPIC_API_KEY is not set in environment variables');
+    process.exit(1);
+  }
+  llmProvider = new AnthropicProvider();
+  llmProvider.initialize(process.env.ANTHROPIC_API_KEY, {
+    model: process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022',
+    maxTokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS || '4096'),
+  });
+} else {
+  if (!process.env.OPENAI_API_KEY) {
+    console.error('❌ OPENAI_API_KEY is not set in environment variables');
+    process.exit(1);
+  }
+  llmProvider = new OpenAIProvider();
+  llmProvider.initialize(process.env.OPENAI_API_KEY, {
+    model: process.env.OPENAI_MODEL || 'gpt-4',
+    maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '5000'),
+  });
+}
 
 // MCP Configuration
 const MCP_SERVER_COMMAND = process.env.MCP_SERVER_COMMAND || 'node';
 const MCP_SERVER_PATH = process.env.MCP_SERVER_PATH || 'C:\\Users\\chatelin\\projets\\POC_MCP';
 
 // Store MCP tools
-let mcpTools: OpenAI.Chat.ChatCompletionTool[] = [];
-
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
+let mcpTools: MCPTool[] = [];
 
 interface ChatRequestBody {
   message: string;
@@ -57,17 +71,14 @@ app.post('/api/chat', async (req: Request<{}, {}, ChatRequestBody>, res: Respons
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    // Build messages array for OpenAI
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    // Build messages array
+    const messages: ChatMessage[] = [
       {
         role: 'system',
         content: CODE_ASSISTANT_SYSTEM_PROMPT,
       },
       // Add conversation history (limited to last 10 messages to manage token usage)
-      ...conversationHistory.slice(-10).map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content,
-      })),
+      ...conversationHistory.slice(-10),
       {
         role: 'user',
         content: message,
@@ -82,100 +93,53 @@ app.post('/api/chat', async (req: Request<{}, {}, ChatRequestBody>, res: Respons
     while (continueLoop && loopCount < maxLoops) {
       loopCount++;
 
-      // Call OpenAI API with streaming
-      const stream = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || 'gpt-4',
+      // Call LLM provider with streaming
+      const toolCalls = await llmProvider.streamChat(
         messages,
-        max_completion_tokens: parseInt(process.env.OPENAI_MAX_TOKENS || '5000'),
-        tools: mcpTools.length > 0 ? mcpTools : undefined,
-        stream: true,
-      });
-
-      let functionCalls: Array<{
-        id: string;
-        name: string;
-        arguments: string;
-      }> = [];
-      let hasContent = false;
-
-      // Stream the response
-      for await (const chunk of stream) {
-        const delta = chunk.choices[0]?.delta;
-
-        // Handle content streaming
-        if (delta?.content) {
-          hasContent = true;
-          res.write(`data: ${JSON.stringify({ content: delta.content })}\n\n`);
-        }
-
-        // Handle tool calls
-        if (delta?.tool_calls) {
-          for (const toolCall of delta.tool_calls) {
-            if (toolCall.index !== undefined) {
-              if (!functionCalls[toolCall.index]) {
-                functionCalls[toolCall.index] = {
-                  id: toolCall.id || '',
-                  name: toolCall.function?.name || '',
-                  arguments: '',
-                };
-              }
-
-              if (toolCall.id) {
-                functionCalls[toolCall.index].id = toolCall.id;
-              }
-              if (toolCall.function?.name) {
-                functionCalls[toolCall.index].name = toolCall.function.name;
-              }
-              if (toolCall.function?.arguments) {
-                functionCalls[toolCall.index].arguments += toolCall.function.arguments;
-              }
-            }
-          }
-        }
-      }
+        mcpTools,
+        res
+      );
 
       // If there are tool calls, execute them
-      if (functionCalls.length > 0) {
+      if (toolCalls.length > 0) {
         res.write(`data: ${JSON.stringify({ content: '\n\n🔧 Utilisation des outils MCP...\n\n' })}\n\n`);
 
-        // Add assistant message with tool calls
+        // Add assistant message with tool calls (for conversation history)
         messages.push({
           role: 'assistant',
-          content: null,
-          tool_calls: functionCalls.map((fc) => ({
-            id: fc.id,
-            type: 'function' as const,
-            function: {
-              name: fc.name,
-              arguments: fc.arguments,
-            },
-          })),
+          content: `[Tool calls: ${toolCalls.map(tc => tc.name).join(', ')}]`,
         });
 
         // Execute each tool call
-        for (const fc of functionCalls) {
+        for (const tc of toolCalls) {
           try {
-            const args = JSON.parse(fc.arguments);
-            console.log(`🔧 Executing MCP tool: ${fc.name}`, args);
+            console.log(`🔧 Tool call received:`, { name: tc.name, arguments: tc.arguments });
+            
+            // Validate arguments
+            if (!tc.arguments || tc.arguments.trim() === '') {
+              console.warn(`⚠️  Tool ${tc.name} has empty arguments, using empty object`);
+              tc.arguments = '{}';
+            }
+            
+            const args = JSON.parse(tc.arguments);
+            console.log(`🔧 Executing MCP tool: ${tc.name}`, args);
 
             // Call MCP tool
-            const result = await mcpClient.callTool(fc.name, args);
+            const result = await mcpClient.callTool(tc.name, args);
             const formattedResult = formatMCPToolResult(result);
 
             // Add tool result to messages
             messages.push({
-              role: 'tool',
-              tool_call_id: fc.id,
-              content: formattedResult,
+              role: 'user',
+              content: `[Tool ${tc.name} result: ${formattedResult}]`,
             });
 
-            res.write(`data: ${JSON.stringify({ content: `✅ Outil ${fc.name} exécuté\n\n` })}\n\n`);
+            res.write(`data: ${JSON.stringify({ content: `✅ Outil ${tc.name} exécuté\n\n` })}\n\n`);
           } catch (error) {
-            console.error(`❌ Error executing tool ${fc.name}:`, error);
+            console.error(`❌ Error executing tool ${tc.name}:`, error);
             messages.push({
-              role: 'tool',
-              tool_call_id: fc.id,
-              content: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              role: 'user',
+              content: `[Tool ${tc.name} error: ${error instanceof Error ? error.message : 'Unknown error'}]`,
             });
           }
         }
@@ -209,9 +173,15 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
+    provider: {
+      name: llmProvider.getName(),
+      model: LLM_PROVIDER === 'anthropic' || LLM_PROVIDER === 'claude' 
+        ? process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-20241022'
+        : process.env.OPENAI_MODEL || 'gpt-4',
+    },
     mcp: {
       connected: mcpClient.isClientConnected(),
-      tools: mcpTools.length,
+      tools: mcpTools.map(tool => tool.function.name),
     }
   });
 });

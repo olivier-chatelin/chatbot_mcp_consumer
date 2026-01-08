@@ -4,9 +4,10 @@ Application web React TypeScript avec interface Bootstrap pour un chatbot spéci
 
 ## 🚀 Fonctionnalités
 
+- **Support multi-LLM** : OpenAI GPT-4 ou Anthropic Claude (configurable)
 - Interface chat moderne avec Bootstrap
 - Conseils de code et bonnes pratiques (SOLID, sécurité, performance)
-- Backend Express sécurisé avec proxy OpenAI API
+- Backend Express sécurisé avec proxy API
 - **Intégration MCP (Model Context Protocol)** : Accès aux outils externes via votre serveur MCP
 - Streaming des réponses en temps réel
 - Support Markdown avec coloration syntaxique
@@ -29,10 +30,24 @@ Application web React TypeScript avec interface Bootstrap pour un chatbot spéci
 3. Configurer les variables d'environnement :
    ```bash
    # Copier le template (déjà fait)
-   # Éditer .env et ajouter votre clé OpenAI
+   # Éditer .env et configurer votre LLM provider
    ```
 
-4. Dans le fichier `.env`, remplacer `your_openai_api_key_here` par votre vraie clé API OpenAI
+4. **Choisir votre LLM provider** dans le fichier `.env` :
+   
+   **Pour OpenAI (GPT-4) :**
+   ```
+   LLM_PROVIDER=openai
+   OPENAI_API_KEY=sk-...
+   OPENAI_MODEL=gpt-4
+   ```
+   
+   **Pour Anthropic (Claude) :**
+   ```
+   LLM_PROVIDER=anthropic
+   ANTHROPIC_API_KEY=sk-ant-...
+   ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+   ```
 
 5. Configurer le chemin de votre serveur MCP dans `.env` :
    ```
@@ -124,12 +139,26 @@ Le chatbot se connecte automatiquement à votre serveur MCP local au démarrage.
 - **Build** : Vite
 - **Dev tools** : tsx, concurrently
 
-## 📝 Configuration OpenAI
+## 📝 Configuration
 
 Variables d'environnement dans `.env` :
 
+**Provider LLM :**
+- `LLM_PROVIDER` : `openai` ou `anthropic` (obligatoire)
+
+**OpenAI (si LLM_PROVIDER=openai) :**
 - `OPENAI_API_KEY` : Votre clé API (obligatoire)
 - `OPENAI_MODEL` : Modèle à utiliser (défaut: gpt-4)
-- `OPENAI_TEMPERATURE` : Créativité (0-2, défaut: 0.7)
-- `OPENAI_MAX_TOKENS` : Tokens max par réponse (défaut: 2000)
+- `OPENAI_MAX_TOKENS` : Tokens max par réponse (défaut: 5000)
+
+**Anthropic (si LLM_PROVIDER=anthropic) :**
+- `ANTHROPIC_API_KEY` : Votre clé API (obligatoire)
+- `ANTHROPIC_MODEL` : Modèle à utiliser (défaut: claude-3-5-sonnet-20241022)
+- `ANTHROPIC_MAX_TOKENS` : Tokens max par réponse (défaut: 4096)
+
+**Serveur :**
 - `PORT` : Port du serveur backend (défaut: 3001)
+
+**MCP :**
+- `MCP_SERVER_COMMAND` : Commande pour lancer le serveur (défaut: `node`)
+- `MCP_SERVER_PATH` : Chemin vers votre serveur MCP
