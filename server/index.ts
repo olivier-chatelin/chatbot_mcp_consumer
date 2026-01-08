@@ -96,7 +96,6 @@ app.post('/api/chat', async (req: Request<{}, {}, ChatRequestBody>, res: Respons
         name: string;
         arguments: string;
       }> = [];
-      let currentFunctionCall: { id: string; name: string; arguments: string } | null = null;
       let hasContent = false;
 
       // Stream the response
